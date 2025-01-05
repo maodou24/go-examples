@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>大文件断点续传</title>
+    <meta charset="utf-8">
+    <style>
+        .progress {
+            width: 300px;
+            height: 20px;
+            background: #f0f0f0;
+            border-radius: 5px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-bar {
+            width: 0%;
+            height: 100%;
+            background: #4CAF50;
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <input type="file" id="fileInput">
+    <button onclick="startUpload()">上传</button>
+    <div class="progress">
+        <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <div id="status"></div>
+
+    <script>
+        const chunkSize = 2 * 1024 * 1024; // 2MB per chunk
+
+        async function startUpload() {
+            const file = document.getElementById('fileInput').files[0];
+            if (!file) {
+                alert('请选择文件');
+                return;
+            }
+
+            const totalChunks = Math.ceil(file.size / chunkSize);
+            const status = document.getElementById('status');
+            const progressBar = document.getElementById('progressBar');
+
+            // 获取已上传的块信息
+            const response = await fetch(`/status?filename=${file.name}&totalChunks=${totalChunks}&fileSize=${file.size}&lastModified=${file.lastModified}`);
+            const { uploadedChunks, completed } = await response.json();
+
+            if (completed) {
+                status.textContent = '文件已经上传完成！';
+                progressBar.style.width = '100%';
+                return;
+            }
+
+            const uploadedSet = new Set(uploadedChunks);
+            
+            for (let i = 0; i < totalChunks; i++) {
+                if (uploadedSet.has(i)) continue;
+
+                const start = i * chunkSize;
+                const end = Math.min(start + chunkSize, file.size);
+                const chunk = file.slice(start, end);
+
+                const formData = new FormData();
+                formData.append('file', chunk);
+                formData.append('filename', file.name);
+                formData.append('chunkNumber', i);
+                formData.append('totalChunks', totalChunks);
+
+                try {
+                    const uploadResponse = await fetch('/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const result = await uploadResponse.json();
+                    if (result.success) {
+                        uploadedSet.add(i);
+                        const progress = (uploadedSet.size / totalChunks) * 100;
+                        progressBar.style.width = progress + '%';
+                        status.textContent = `上传进度: ${Math.round(progress)}%`;
+
+                        if (result.completed) {
+                            status.textContent = '文件上传完成！';
+                            break;
+                        }
+                    } else {
+                        throw new Error(result.error || '上传失败');
+                    }
+                } catch (error) {
+                    status.textContent = `块 ${i + 1} 上传失败，请重试: ${error.message}`;
+                    console.error(error);
+                    return;
+                }
+            }
+        }
+    </script>
+</body>
+</html>
