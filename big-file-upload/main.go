@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"sync"
 
@@ -35,6 +36,11 @@ func main() {
 	e.GET("/status", fileStatus)
 	e.POST("/upload", handleUpload)
 
+	// 添加新的路由处理
+	e.GET("/files", listFiles)
+	e.GET("/download", handleDownload)
+
+	fmt.Println("Server started at :8080")
 	e.Run(":8080")
 }
 
@@ -185,4 +191,74 @@ func serveHTML(ctx *gin.Context) {
 	ctx.HTML(http.StatusOK, "index.html", gin.H{
 		"index": "index.html",
 	})
+}
+
+// 列出可下载的文件
+func listFiles(c *gin.Context) {
+	files, err := os.ReadDir("./uploads")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var fileList []string
+	for _, file := range files {
+		if !file.IsDir() {
+			fileList = append(fileList, file.Name())
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"files": fileList,
+	})
+}
+
+// 处理文件下载
+func handleDownload(c *gin.Context) {
+	filename := c.Query("file")
+	if filename == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "File parameter is required"})
+		return
+	}
+
+	filepath := filepath.Join("uploads", filename)
+	file, err := os.Open(filepath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	defer file.Close()
+
+	fileInfo, err := file.Stat()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 支持断点续传
+	rangeHeader := c.GetHeader("Range")
+	if rangeHeader != "" {
+		var start int64
+		_, err := fmt.Sscanf(rangeHeader, "bytes=%d-", &start)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		// 设置响应头
+		c.Header("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, fileInfo.Size()-1, fileInfo.Size()))
+		c.Header("Accept-Ranges", "bytes")
+		c.Status(http.StatusPartialContent)
+
+		// 设置文件偏移量
+		file.Seek(start, 0)
+	} else {
+		c.Header("Content-Length", strconv.FormatInt(fileInfo.Size(), 10))
+	}
+
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+
+	// 将文件内容写入响应
+	c.File(filepath)
 }
